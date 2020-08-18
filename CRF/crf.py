@@ -10,6 +10,10 @@ from sklearn_crfsuite import metrics
 from sklearn.metrics import make_scorer
 from sklearn.model_selection import RandomizedSearchCV
 
+# Ignore warnings
+import warnings
+warnings.filterwarnings("ignore")
+
 
 # Read train and test files
 train = open('../dataset/NL2SparQL4NLU.train.conll.txt', 'r')
@@ -18,7 +22,7 @@ test = open('../dataset/NL2SparQL4NLU.test.conll.txt', 'r')
 test_features = open('../dataset/NL2SparQL4NLU.test.features.conll.txt', 'r')
 
 # Window of words for the features (symmetric)
-WIN = 10
+WIN = 5
 print("WINDOW: ", WIN)
 
 ########################
@@ -47,7 +51,6 @@ for t_line, f_line in zip(train, train_features):
 # Unique concepts and remove 'O' for the evaluation of F1 (wanna optimize on the others)
 concepts = list(set(concepts))
 concepts.remove('O')
-print("Concepts: ", concepts)	
 
 ########################
 # Reading of test file
@@ -162,8 +165,6 @@ train_labels = [sent2labels(s) for s in train_sents]
 ###############################
 # Base model (parameters are actually not needed apart from 'all_possible_transitions'
 crf = CRF(
-	c2=0.1,
-	max_iterations=1000, 
 	all_possible_transitions=True)
 
 # Hyperparameters on which to look for the optimal
@@ -220,14 +221,19 @@ crf.fit(train_feats, train_labels)
 #######################
 pred = crf.predict(test_feats)
 pred_concepts = [[(test_feats[i][j], t) for j, t in enumerate(tokens)] for i, tokens in enumerate(pred)]
-print(pred)
 
 #####################################
 # Generate the resulting output file
 #####################################
 with open('result.txt', 'w') as result:
-	for
-
+	# Navigate test sentences and predicted tag lists together
+	for sent, tagged in zip(test_sents, pred):
+		i = 0
+		for word, lemma, pos, concept in sent:
+			string = word + '\t' + tagged[i] + '\n'
+			result.write(string)
+			i += 1
+		result.write('\n')
 
 
 ###################################
@@ -237,10 +243,10 @@ results = evaluate(test_sents, pred_concepts)
 
 pd_tbl = pd.DataFrame().from_dict(results, orient='index')
 print(pd_tbl)
-'''pd_tbl.to_csv('evaluation_window{}.txt'.format(WIN))
+pd_tbl.to_csv('evaluation_window{}_python.txt'.format(WIN))
 
-with open('evaluation_window{}.txt'.format(WIN), 'a') as res:
+with open('evaluation_window{}_python.txt'.format(WIN), 'a') as res:
 	res.write('\n')
 	res.write('Window: {}\n\n'.format(WIN))
 	res.write('Best params: {}\n'.format(str(best_params)))
-	res.write('Best CV score: {}'.format(str(best_score)))'''
+	res.write('Best CV score: {}'.format(str(best_score)))
