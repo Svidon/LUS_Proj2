@@ -1,10 +1,14 @@
 import os
 import sys
+import scipy
 import pandas as pd
-sys.path.insert(0, os.path.abspath('../')) # To import conll
 
+sys.path.insert(0, os.path.abspath('../')) # To import conll
 from conll import evaluate
 from sklearn_crfsuite import CRF
+from sklearn_crfsuite import metrics
+from sklearn.metrics import make_scorer
+from sklearn.model_selection import RandomizedSearchCV
 
 
 # Read train and test files
@@ -13,9 +17,9 @@ train_features = open('../dataset/NL2SparQL4NLU.train.features.conll.txt', 'r')
 test = open('../dataset/NL2SparQL4NLU.test.conll.txt', 'r')
 test_features = open('../dataset/NL2SparQL4NLU.test.features.conll.txt', 'r')
 
-# Parameters for the model
-WIN = 2	# Window of words for the features
-
+# Window of words for the features (symmetric)
+WIN = 10
+print("WINDOW: ", WIN)
 
 ########################
 # Reading of train file
@@ -24,6 +28,7 @@ WIN = 2	# Window of words for the features
 # Sentences of corpus
 train_sents = []
 tmp = []
+concepts = []
 
 # Identify all sentences with tuples of word-tag
 for t_line, f_line in zip(train, train_features):
@@ -34,10 +39,15 @@ for t_line, f_line in zip(train, train_features):
 		# Contruct a tuple with: word, lemma, POS, concept
 		a = [a[0], f[2], f[1], a[1]]
 		tmp.append(tuple(a))
+		concepts.append(a[3])
 	else:
 		train_sents.append(tmp)
 		tmp = []
 		
+# Unique concepts and remove 'O' for the evaluation of F1 (wanna optimize on the others)
+concepts = list(set(concepts))
+concepts.remove('O')
+print("Concepts: ", concepts)	
 
 ########################
 # Reading of test file
@@ -92,12 +102,8 @@ def word2features(sent, i, window):
 				postag1 = sent[i-k][2]
 				features.update({
 				    '-{}:word'.format(k): word1,
-				    '-{}:word[:2]'.format(k): word1[:2],
-				    '-{}:word[-3:]'.format(k): word1[-3:],
 				    '-{}:word.isdigit()'.format(k): word1.isdigit(),
-				    '-{}:lemma'.format(k): lemma1,
-				    '-{}:postag'.format(k): postag1,
-				    '-{}:postag[:2]'.format(k): postag1[:2]
+				    '-{}:postag'.format(k): postag1
 				})
 	else:
 		features['BOS'] = True
@@ -114,12 +120,8 @@ def word2features(sent, i, window):
 				postag1 = sent[i+k][2]
 				features.update({
 				    '+{}:word'.format(k): word1,
-				    '+{}:word[:2]'.format(k): word1[:2],
-				    '+{}:word[-3:]'.format(k): word1[-3:],
 				    '+{}:word.isdigit()'.format(k): word1.isdigit(),
-				    '+{}:lemma'.format(k): lemma1,
-				    '+{}:postag'.format(k): postag1,
-				    '+{}:postag[:2]'.format(k): postag1[:2]
+				    '+{}:postag'.format(k): postag1
 				})
 	else:
 		features['EOS'] = True
@@ -158,14 +160,58 @@ train_labels = [sent2labels(s) for s in train_sents]
 ###############################
 # Instantiate model and train
 ###############################
-
+# Base model (parameters are actually not needed apart from 'all_possible_transitions'
 crf = CRF(
-    algorithm='lbfgs', 
-    c1=0.1, 
-    c2=0.1, 
-    max_iterations=1000, 
-    all_possible_transitions=True
-)
+	c2=0.1,
+	max_iterations=1000, 
+	all_possible_transitions=True)
+
+# Hyperparameters on which to look for the optimal
+# Two different because the two tried algorithms have different parameters
+param_space1 = {
+	'algorithm': ['lbfgs'],
+	'min_freq': [1,2,3], # Frequency cutoff
+	'c1': scipy.stats.expon(scale=0.5),
+	'c2': scipy.stats.expon(scale=0.05),
+	'max_iterations': [100,1000,2000]}
+param_space2 = {
+	'algorithm': ['l2sgd'],
+	'min_freq': [1,2,3],
+	'c2': scipy.stats.expon(scale=0.05),
+	'max_iterations': [100,500,1000]} # 1000 is the max for l2sgd
+
+# Prepare a scorer for the parameters search
+f1_scorer = make_scorer(metrics.flat_f1_score, average='weighted', labels=concepts)
+
+# Make the parameters search
+rs_lbfgs = RandomizedSearchCV(crf, param_space1, n_jobs=-1, random_state=1, verbose=1, cv=3, n_iter=20, scoring=f1_scorer)
+rs_lbfgs.fit(train_feats, train_labels)
+
+rs_l2sgd = RandomizedSearchCV(crf, param_space2, n_jobs=-1, random_state=1, verbose=1, cv=3, n_iter=20, scoring=f1_scorer)
+rs_l2sgd.fit(train_feats, train_labels)
+
+if rs_lbfgs.best_score_ > rs_l2sgd.best_score_:
+	# Print the best parameters
+	best_params = rs_lbfgs.best_params_
+	best_score = rs_lbfgs.best_score_
+
+	print('best params:', best_params)
+	print('best CV score:', best_score)
+
+	# Assign to CRF best parameters
+	crf = rs_lbfgs.best_estimator_
+else:
+	# Print the best parameters
+	best_params = rs_l2sgd.best_params_
+	best_score = rs_l2sgd.best_score_
+
+	print('best params:', best_params)
+	print('best CV score:', best_score)
+
+	# Assign to CRF best parameters
+	crf = rs_l2sgd.best_estimator_
+
+# Train with the best parameters
 crf.fit(train_feats, train_labels)
 
 
@@ -174,6 +220,15 @@ crf.fit(train_feats, train_labels)
 #######################
 pred = crf.predict(test_feats)
 pred_concepts = [[(test_feats[i][j], t) for j, t in enumerate(tokens)] for i, tokens in enumerate(pred)]
+print(pred)
+
+#####################################
+# Generate the resulting output file
+#####################################
+with open('result.txt', 'w') as result:
+	for
+
+
 
 ###################################
 # Evaluate results and print table
@@ -182,13 +237,10 @@ results = evaluate(test_sents, pred_concepts)
 
 pd_tbl = pd.DataFrame().from_dict(results, orient='index')
 print(pd_tbl)
+'''pd_tbl.to_csv('evaluation_window{}.txt'.format(WIN))
 
-
-
-
-
-
-
-
-		
-	
+with open('evaluation_window{}.txt'.format(WIN), 'a') as res:
+	res.write('\n')
+	res.write('Window: {}\n\n'.format(WIN))
+	res.write('Best params: {}\n'.format(str(best_params)))
+	res.write('Best CV score: {}'.format(str(best_score)))'''
