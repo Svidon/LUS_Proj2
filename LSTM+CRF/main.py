@@ -1,11 +1,14 @@
 # Libraries import
 import sys
 import os
-import torch
 import time
 import pandas as pd
 import matplotlib.pyplot as plt
 from collections import defaultdict
+
+import torch
+from torch.utils.data import DataLoader
+from utils import BucketBatchSampler, BucketDataset
 
 sys.path.insert(0, os.path.abspath('../')) # To import conll
 from conll import evaluate
@@ -16,6 +19,7 @@ train_file = open('../dataset/NL2SparQL4NLU.train.conll.txt', 'r')
 train_features_file = open('../dataset/NL2SparQL4NLU.train.features.conll.txt', 'r')
 test_file = open('../dataset/NL2SparQL4NLU.test.conll.txt', 'r')
 test_features_file = open('../dataset/NL2SparQL4NLU.test.features.conll.txt', 'r')
+result_file = open('result.txt', 'w')
 
 # Check arguments and set the chosen embedding and model
 if(len(sys.argv) < 3):
@@ -32,7 +36,8 @@ model_chosen = sys.argv[2]
 EMBEDDING_DIM = 128
 HIDDEN_DIM = 64
 bi = False	# Whether it is bidirectional
-epochs = 50
+epochs = 10	# Good amount is 50
+BATCH = 50	# Batch size
 
 # Optimizer parameters
 lr = 0.01		# Learning rate
@@ -51,6 +56,9 @@ tmp_c = []
 tmp_wc = []
 labels = []
 
+# Compute the max length in the meanwhile
+max_sent = 0
+
 # Read all sentences and concepts
 # Save them in separate lists
 for t_line, f_line in zip(train_file, train_features_file):
@@ -65,6 +73,11 @@ for t_line, f_line in zip(train_file, train_features_file):
 		train_sents.append(tmp_w)
 		labels.append(tmp_c)
 		train_sents_conc.append(tmp_wc)
+		
+		# For the max length
+		if len(tmp_w) > max_sent:
+			max_sent = len(tmp_w)
+		
 		tmp_w = []
 		tmp_c = []
 		tmp_wc = []
@@ -76,7 +89,6 @@ for t_line, f_line in zip(train_file, train_features_file):
 test_sents = []
 test_sents_conc = [] # Used for evaluation
 tmp_w = []
-tmp_c = []
 tmp_wc = []
 
 # Read all sentences and concepts
@@ -95,24 +107,24 @@ for t_line, f_line in zip(test_file, test_features_file):
 		tmp_wc = []
 
 
-###############################################
-# Vocabulary for the concepts is always the same
-###############################################
+#####################################################
+# Vocabulary for the concepts can be always the same
+#####################################################
 # Generate concepts vocabulary
 conc_set = set([conc for sent in labels for conc in sent])
 conc_vocab = {}
 for conc in conc_set:
 	conc_vocab[conc] = len(conc_vocab)
 
-# Padding element will be super high
-#conc_vocab['pad'] = 10000
+# Add padding element
+conc_vocab['<pad>'] = -1
 	
 def prepare_tags(sent, vocab, pad=0):
 	seq = [vocab[w] for w in sent]
 		
 	# Apply padding if needed
 	while(len(seq) < pad):
-		seq.append[10000]
+		seq.append(-1)
 		
 	return torch.tensor(seq, dtype=torch.long)
 
@@ -130,8 +142,8 @@ if embed_chosen == 'custom':
 		vocab[w] = len(vocab)
 
 	# Add padding element and 'unk' element:
-	vocab['UNK'] = len(vocab)
-	#vocab['PAD'] = len(vocab)
+	vocab['<pad>'] = len(vocab)
+	vocab['<unk>'] = len(vocab)
 	
 	# Function to transform the sentence and PAD it
 	def prepare_sequence(sent, vocab, pad=0):
@@ -141,11 +153,11 @@ if embed_chosen == 'custom':
 			if w in vocab:
 				seq.append(vocab[w])
 			else:
-				seq.append(len(vocab)-1) # Corresponding to 'UNK'
+				seq.append(vocab['<unk>'])
 		
 		# Apply padding if needed
 		while(len(seq) < pad):
-			seq.append['PAD']
+			seq.append(vocab['<pad>'])
 			
 		return torch.tensor(seq, dtype=torch.long)
 		
@@ -198,7 +210,25 @@ def conc_from_score(scores):
 
 	# Return the concepts mapped to these indexes
 	return [list(conc_vocab.keys())[list(conc_vocab.values()).index(idx)] for idx in idx_scores]
+	
+	
+#######################
+# Prepare data batches
+#######################
+# The technique used is to have batches with sentences which have the same length
+# The maximum length is pretty short, so it is very likely to have sentences with similar length
 
+# First vectorize the sequences
+train_vec = [prepare_sequence(sent, vocab) for sent in train_sents]
+labels_vec = [prepare_tags(sent, conc_vocab) for sent in labels]
+
+# Now instantiate the bucket sampler and bucket  
+bucket_batch_sampler = BucketBatchSampler(BATCH, train_vec, labels_vec)
+bucket_dataset = BucketDataset(train_vec, labels_vec)
+
+# Now use the data loader for the iterator
+data_ready = DataLoader(bucket_dataset, batch_sampler=bucket_batch_sampler, shuffle=False, drop_last=False)
+print("Number of batches: ", data_ready.batch_sampler.batch_count())
 
 ####################
 # Instantiate model
@@ -216,12 +246,6 @@ optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=wd, momentum
 ########################
 # Training of the model
 ########################
-# See what the scores are before training
-# Note that element i,j of the output is the score for tag j for word i.
-# Here we don't need to train, so the code is wrapped in torch.no_grad()
-with torch.no_grad():
-	inputs = prepare_sequence(train_sents[0], vocab)
-	tag_scores = model(inputs)
 
 # Save losses and F1 scores
 history = defaultdict(list)
@@ -298,7 +322,7 @@ plt.show()
 	
 	
 ####################
-# Apply on test set
+# Tag the test set
 ####################
 model.eval()
 test_preds = []
@@ -317,15 +341,14 @@ ev = test_evaluation(test_preds)
 # Print out a good formatted evaluation
 pd_tbl = pd.DataFrame().from_dict(ev, orient='index')
 print(pd_tbl)
-#pd_tbl.to_csv('evaluation_python.txt')
+pd_tbl.to_csv('evaluation_python.txt')
 
 
-
-
-
-
-
-
-
-
-
+##########################################
+# Generate output file with computed tags
+##########################################
+for sent, tagged in zip(test_sents, test_preds):
+	for i in len(sent):
+		string = sent[i] + '\t' + tagged[i] + '\n'
+		result_file.write(string)
+	result_file.write('\n')
