@@ -20,7 +20,7 @@ There are 3 different models. In all of the different folder there will be a *mo
 
 The models are the following:
 
-* **CRF model:** it is in the *CRF* folder. To run the model and tag the test set just execute `python3 crf.py`. The parameter you can tune is the **window size**: you have to modify the `WIN` variable in the python script. The resulting tagged sentences can be found in `result.txt`. An additional file is generated, `evaluation_window{size}_python`, containing both the evaluation and the best hyperparameters of the algorithm (along with the window size). The evaluation files in the proper folder will have this same structure. If you want to evaluate the accuracy as well simply run `complete_evaluation.sh`: the results will be in the newly generated `evaluation.txt`
+* **CRF model:** it is in the *CRF* folder. To run the model and tag the test set just execute `python3 crf.py`. The parameter you can tune is the **window size**: you have to modify the `WIN` variable in the python script. The resulting tagged sentences can be found in `result.txt`. An additional file is generated, `evaluation_window{size}_python`, containing both the evaluation and the best hyperparameters of the algorithm (along with the window size). The evaluation files in the proper folder will have this same structure. If you want to evaluate the accuracy as well simply run `complete_evaluation.sh`: the results will be in the newly generated `evaluation.txt`. The model takes quite a long time to train, because it searches the hyperparameters in a parameter space. If you want to see the optimal results without the search you have to modify once again the script and assign the optimal parameters to the `crf` object.
 
 * **biLSTM:**
 
