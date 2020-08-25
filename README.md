@@ -16,6 +16,8 @@ This project requires having installed python3, sklearn_crfsuite and pytorch.
 
 The files `conlleval.pl` and `conll.py` are utilities (given by the lecturers) to evaluate the model on the test set.
 
+The file `LSTM+CRF/utils.py` contains some utilities used for the batch training of the NNs. It allows to split the data in batches so that each batch has only sentences of the same length. This allows to avoid using padding. The code has not been written by me, and it can be found [here](https://github.com/chrisvdweth/ml-toolkit/blob/master/pytorch/utils/data/text/dataset.py) (credits to user *chrisvdweth*).
+
 There are 3 different models. In all of the different folder there will be a *model_evaluations* folder, in which there is the best resulting tags for each model (`result.txt`) and a series of files containing the evaluations for different parameters I tried. These files are not generated from the python evaluation script (which doesn't give the accuracy), but from the perl script (also for consistency with the previous project).
 
 The models are the following:

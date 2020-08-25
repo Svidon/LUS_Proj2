@@ -5,7 +5,8 @@
 
 from torch.utils.data import Sampler, Dataset
 from collections import OrderedDict
-from random import shuffle
+#from random import shuffle
+import random
 
 
 class BucketDataset(Dataset):
@@ -49,7 +50,7 @@ class BucketBatchSampler(Sampler):
 
     def _generate_batch_map(self):
         # shuffle all of the indices first so they are put into buckets differently
-        shuffle(self.ind_n_len)
+        random.shuffle(self.ind_n_len)
         # Organize lengths, e.g., batch_map[(5,8)] = [30, 124, 203, ...] <= indices of sequences of length 10
         batch_map = OrderedDict()
         for idx, length in self.ind_n_len:
@@ -74,6 +75,6 @@ class BucketBatchSampler(Sampler):
     def __iter__(self):
         self.batch_list = self._generate_batch_map() # <-- Could be a waste of performance
         # shuffle all the batches so they aren't ordered by bucket size
-        shuffle(self.batch_list)
+        random.shuffle(self.batch_list)
         for i in self.batch_list:
             yield i
