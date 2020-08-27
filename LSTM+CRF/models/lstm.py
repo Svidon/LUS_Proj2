@@ -4,18 +4,16 @@ from torch.nn import functional as F
 
 class LSTMTagger(nn.Module):
 
-	def __init__(self, embedding_dim, hidden_dim, vocab_size, tagset_size, embed_type, bidirectional, emb_weights):
+	def __init__(self, embedding_dim, hidden_dim, vocab_size, tagset_size, bidirectional, emb_weights):
 		super(LSTMTagger, self).__init__()
 
 		###########################
 		# Embeds handling
 		###########################
-		if embed_type == 'default':
+		if emb_weights is not None:
+			self.word_embeddings = nn.Embedding.from_pretrained(emb_weights, freeze=True)
+		else:
 			self.word_embeddings = nn.Embedding(vocab_size, embedding_dim)
-		elif embed_type == 'spacy':
-			self.word_embeddings = nn.Embedding.from_pretrained(emb_weights, freeze=True)
-		elif embed_type == 'glove':
-			self.word_embeddings = nn.Embedding.from_pretrained(emb_weights, freeze=True)
 
 		# The LSTM takes word embeddings as inputs, and outputs hidden states with dimensionality hidden_dim.
 		self.lstm = nn.LSTM(input_size=embedding_dim, hidden_size=hidden_dim // (1 if not bidirectional else 2),

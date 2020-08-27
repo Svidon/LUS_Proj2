@@ -6,6 +6,7 @@ import random
 import spacy
 import torchtext
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
@@ -16,7 +17,7 @@ from utils import BucketBatchSampler, BucketDataset
 sys.path.insert(0, os.path.abspath('../')) # To import conll
 from conll import evaluate
 from models.lstm import LSTMTagger
-#from models.lstm_crf import LSTMCRFTagger
+from models.lstm_crf import LSTMCRFTagger
 
 # Data files and output
 train_file = open('../dataset/NL2SparQL4NLU.train.conll.txt', 'r')
@@ -43,8 +44,8 @@ torch.manual_seed(42)
 # Parameter variables
 ##################################
 # Network parameters
-EMBEDDING_DIM = 256	# Used when the chosen embedding is 'default' 
-HIDDEN_DIM = 64
+EMBEDDING_DIM = 300	# Used when the chosen embedding is 'default' 
+HIDDEN_DIM = 150	# Good is 128 or 150
 bi = True	# Whether it is bidirectional
 epochs = 100	# Good amount is 100
 
@@ -120,6 +121,7 @@ for t_line, f_line in zip(test_file, test_features_file):
 	else:
 		test_sents.append(tmp_w)
 		test_sents_conc.append(tmp_wc)
+
 		tmp_w = []
 		tmp_wc = []
 
@@ -151,7 +153,7 @@ def prepare_sequence(sent, vocab):
 				seq.append(vocab[w])
 			else:
 				seq.append(vocab['<unk>'])
-			
+
 		return torch.tensor(seq, dtype=torch.long)
 
 
@@ -169,23 +171,40 @@ if embed_chosen == 'default':
 		word2idx[w] = len(word2idx)
 
 	# Add padding element and 'unk' element:
-	word2idx['<pad>'] = len(word2idx)
 	word2idx['<unk>'] = len(word2idx)
 
 
-############################
-# Word vocabularies if spacy
-############################
+####################################################
+# Word vocabularies and embeddings weights if spacy
+####################################################
 if embed_chosen == 'spacy':
 	# Load spacy's largest model
-	nlp = spacy.load("en_core_web_lg")
+	nlp = spacy.load("en_core_web_lg", vocab=True)
 
-	print(dir(nlp))
+	# Set the embedding dimension of spacy
+	EMBEDDING_DIM = nlp.vocab.vectors_length
+
+	# Add the '<unk>' token as an all 0 vector. It will automatically be in the dictionary
+	nlp.vocab.set_vector('<unk>', vector=np.zeros(EMBEDDING_DIM))
+
+	# Save the embedding weights
+	embedding_weights = torch.FloatTensor(nlp.vocab.vectors.data)
+
+	# Get the string2hash function and the hash2row function
+	# The second will be the index of the vector corresponsing to the hash (so string)
+	string_hashes = nlp.vocab.strings
+	vec = nlp.vocab.vectors
+	row_ids = vec.key2row
+
+	# Generate word2idx. By iterating vectors.items() we are sure to only get existing keys, hashes and vectors
+	word2idx = {}
+	for key, vector in vec.items():
+		word2idx[string_hashes[key]] = row_ids[key]
 
 
-############################
-# Word vocabularies if glove
-############################
+###################################################
+# Word vocabularies and embedding weights if glove
+###################################################
 if embed_chosen == 'glove':
 
 	# Load smallest glove embedding. The first time it will download the data
@@ -196,7 +215,7 @@ if embed_chosen == 'glove':
 
 	# This is a matrix which contains all the embedding vectors we'll use as weights
 	embedding_weights = glove.vectors
-	
+
 	# This is a dictionary word to index, with indexes corresponding to the right glove vectors
 	word2idx = glove.stoi
 	# Default value for unknown words for glove, not present when assigning stoi
@@ -211,23 +230,23 @@ if embed_chosen == 'glove':
 # hypothesis = [[('I', 'O'), ('am', 'O'), ('fierce', 'I-actor.name')]]
 
 def train_evaluation(predictions):
-	
 	# We have tuples (sentence, labels, pred_labels)
 	# Transform those in the right format (see above)
 	correct = []
 	predicted = []
 	
 	for el in predictions:
-		s = el[0] # It doesn't matter if it's encoded as long as tokens are recognizable
-		lab = [list(conc_vocab.keys())[list(conc_vocab.values()).index(idx)] for idx in el[1]]
-		pred_lab = conc_from_score(el[2])
+
+		sent = el[0] # It doesn't matter if it's encoded as long as tokens are recognizable
+		orig_lab = [list(conc_vocab.keys())[list(conc_vocab.values()).index(idx)] for idx in el[1]]
+		pred_lab = el[2]
 		
-		# Tmp lists to store the sentences
+		# Placeholders
 		tmp_c = []
 		tmp_p = []
-		
-		for w, l, t in zip(s,lab, pred_lab):
-			# Append (word, label) for correct and (word, predicted) for 
+
+		for w, l, t in zip(sent,orig_lab, pred_lab):
+			# Append (word, label) for correct and (word, predicted) for predicted
 			tmp_c.append(tuple([w, l]))
 			tmp_p.append(tuple([w, t]))
 			
@@ -283,14 +302,65 @@ print("Number of batches: ", batches_number)
 ####################
 # Instantiate model
 ####################
-# Choose the right model 
+# Choose the right model
+# Embedding weights is None only with default. When the weights are given it doesn't matter from which lm
 if model_chosen == 'lstm':
-	model = LSTMTagger(EMBEDDING_DIM, HIDDEN_DIM, len(word2idx), len(conc_vocab), embed_chosen, bi, embedding_weights)
+	# Set model and loss
+	model = LSTMTagger(EMBEDDING_DIM, HIDDEN_DIM, len(word2idx), len(conc_vocab), bi, embedding_weights)
+	loss_function = torch.nn.NLLLoss()	# NLL is used for multi classification tasks
 elif model_chosen == 'lstm+crf':
-	model = LSTMTagger(EMBEDDING_DIM, HIDDEN_DIM, len(word2idx), len(conc_vocab), embed_chosen, bi, embedding_weights)
+	# We will return the loss with the model itself
+	model = LSTMCRFTagger(EMBEDDING_DIM, HIDDEN_DIM, len(word2idx), len(conc_vocab), bi, embedding_weights)
 
-loss_function = torch.nn.NLLLoss()	# NLL is used for multi classification tasks
+# Set the optimizer
 optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=wd, momentum=mmtm)
+
+
+###########################################
+# Forward step and weights update for LSTM
+###########################################
+# This has to be repeated each batch
+def forward_LSTM(batch_in, batch_out):
+	sent_len = [len(a) for a in batch_out]	
+		
+	# Clear gradients
+	model.zero_grad()
+
+	# Run forward pass
+	tag_scores = model(batch_in)
+
+	# Reshape is for separating the sentences
+	reshaped = tag_scores.reshape(len(batch_in), sent_len[0], len(conc_vocab))
+
+	# Compute the loss and update the weights
+	loss = loss_function(tag_scores, torch.flatten(batch_out))
+	loss.backward()
+	optimizer.step()
+	
+	return reshaped, loss.item()
+
+
+###############################################
+# Forward step and weights update for LSTM+CRF
+###############################################
+# This has to be repeated each batch
+def forward_LSTMCRF(batch_in, batch_out):
+
+	# Clear gradients
+	model.zero_grad()
+	
+	# Compute the loss doing the forward pass
+	loss = model.forward(batch_in, batch_out)
+
+	# Update the weights with the loss
+	loss.backward()
+	optimizer.step()
+
+	# Compute the tags. These will be used for the F1 score computation
+	with torch.no_grad():
+		comp_tags = model.predict(batch_in)
+
+	return comp_tags, loss.item()
 
 
 ########################
@@ -303,7 +373,6 @@ history = defaultdict(list)
 # Training loop
 print("=================================================================================")
 print("Training started")
-model.train()
 for epoch in range(1, epochs+1):
 	# To keep track of the loss and F1 scores for the epoch
 	loss_sum = 0
@@ -315,25 +384,26 @@ for epoch in range(1, epochs+1):
 	t0 = time.time()
 	i = 1
 	for batch_in, batch_out in data_batch:
-		sent_len = [len(a) for a in batch_out]	
-		
-		# Clear gradients
-		model.zero_grad()
 
-		# Run forward pass
-		tag_scores = model(batch_in)
-		
-		# Save for F1 evaluation. Reshape is for separating the sentences
-		# We have to save the original labels as well, to maintain the order in the batches
-		reshaped = tag_scores.reshape(len(batch_in), sent_len[0], len(conc_vocab))
-		tags_sum.extend([(sent, labels, tag_list) for sent, labels, tag_list in zip(batch_in, batch_out, reshaped)])
-		
-		# Compute loss, gradients, and update parameters by calling optimizer.step()
-		loss = loss_function(tag_scores, torch.flatten(batch_out))
-		loss.backward()
-		optimizer.step()
-		
-		loss_sum += loss.item()
+		# Forward step and weights update is different for the two models
+		if model_chosen == 'lstm':
+			comp_tags, comp_loss = forward_LSTM(batch_in, batch_out)
+
+			# Save computed tags and loss
+			# We have to save the original labels as well, to maintain the order in the batches
+			tags_sum.extend([(sent, labels, conc_from_score(tag_list)) for sent, labels, tag_list in zip(batch_in, batch_out, comp_tags)])
+			loss_sum += comp_loss
+
+		else:
+			# For CRF we also need to pass the labels to train the CRF
+			# During the training we don't compute the sequence, but the NLL
+			comp_tags, comp_loss = forward_LSTMCRF(batch_in, batch_out)
+			
+			comp_tags = [[list(conc_vocab.keys())[list(conc_vocab.values()).index(idx)] for idx in tmp] for tmp in comp_tags]
+			# Save computed tags and loss
+			# We have to save the original labels as well, to maintain the order in the batches
+			tags_sum.extend([(sent, labels, tag_list) for sent, labels, tag_list in zip(batch_in, batch_out, comp_tags)])
+			loss_sum += comp_loss		
 	
 	# Try on test to check the F1 evolution on it
 	with torch.no_grad():
@@ -343,10 +413,15 @@ for epoch in range(1, epochs+1):
 			# Prepare the sentence and feed it to the model
 			inp = prepare_sequence(sent, word2idx).reshape(1, len(sent))
 			
-			tag_scores = model(inp)
-			
-			# Save the tag sequence
-			test_preds.append(conc_from_score(tag_scores))
+			if model_chosen == 'lstm':
+				tag_scores = model(inp)
+				# Save the tag sequence
+				test_preds.append(conc_from_score(tag_scores))
+			else:
+				comp_tags = model.predict(inp)
+				comp_tags = [list(conc_vocab.keys())[list(conc_vocab.values()).index(idx)] for tmp in comp_tags for idx in tmp]
+				# With the CRF we already get as output the predicted labels
+				test_preds.append(comp_tags)
 			
 		# Compute evaluation
 		ev = test_evaluation(test_preds)['total']['f']
@@ -358,7 +433,7 @@ for epoch in range(1, epochs+1):
 	e_loss = loss_sum / batches_number
 	ev_train = train_evaluation(tags_sum)
 	f1 = ev_train['total']['f']
-	print(f"Epoch {epoch}: Loss = {e_loss:.4f}\t F1 = {f1:.4f}\t Test F1 = {ev:.4f}\t Time = {t1-t0:.4f}s")
+	print(f"Epoch {epoch}: Loss = {e_loss:.4f}\t Train F1 = {f1:.4f}\t Test F1 = {ev:.4f}\t Time = {t1-t0:.4f}s")
 	
 	# Save info
 	history['loss'].append(e_loss)
@@ -396,10 +471,15 @@ test_preds = []
 for sent in test_sents:
 	# Prepare the sentence and feed it to the model
 	inp = prepare_sequence(sent, word2idx).reshape(1, len(sent))
-	tag_scores = model(inp)
-
-	# Save the tag sequence
-	test_preds.append(conc_from_score(tag_scores))
+	if model_chosen == 'lstm':
+		tag_scores = model(inp)
+		# Save the tag sequence
+		test_preds.append(conc_from_score(tag_scores))
+	else:
+		comp_tags = model.predict(inp)
+		comp_tags = [list(conc_vocab.keys())[list(conc_vocab.values()).index(idx)] for tmp in comp_tags for idx in tmp]
+		# With the CRF we already get as output the predicted labels
+		test_preds.append(comp_tags)
 
 # Compute evaluation
 ev = test_evaluation(test_preds)
@@ -409,7 +489,10 @@ print("Tagging and test evaluation complete")
 print("Evaluation results:")
 pd_tbl = pd.DataFrame().from_dict(ev, orient='index')
 print(pd_tbl)
-pd_tbl.to_csv('evaluation_python.txt')
+if bi:
+	pd_tbl.to_csv('evaluation_{}_{}_bi.txt'.format(model_chosen, embed_chosen))
+else:
+	pd_tbl.to_csv('evaluation_{}_{}.txt'.format(model_chosen, embed_chosen))
 print("=================================================================================")
 
 
